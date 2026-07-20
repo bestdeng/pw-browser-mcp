@@ -29,3 +29,6 @@ Thumbs.db
 
 # Temp verification scripts
 hermes-verify-*
+
+# Build artifacts
+*.zip
