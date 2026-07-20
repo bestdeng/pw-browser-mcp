@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "pw-browser-mcp"
+version = "1.1.0"
+description = "Playwright MCP server for Hermes Agent — 17 browser tools with Chrome profile selection"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "bestdeng"},
+]
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "playwright>=1.40.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/bestdeng/pw-browser-mcp"
+
+[tool.setuptools.packages.find]
+include = ["pw_browser_mcp*"]
