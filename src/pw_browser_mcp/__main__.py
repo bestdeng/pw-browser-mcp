@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 
 from pw_browser_mcp.server import mcp
 
@@ -38,13 +37,10 @@ def main() -> None:
         mcp.settings.host = args.host
         mcp.settings.port = args.port
         mcp.run(transport="streamable-http")
-    elif args.transport == "sse":
+    else:  # "sse"
         mcp.settings.host = args.host
         mcp.settings.port = args.port
         mcp.run(transport="sse")
-    else:
-        print(f"Unknown transport: {args.transport}", file=sys.stderr)
-        sys.exit(1)
 
 
 if __name__ == "__main__":
