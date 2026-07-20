@@ -25,7 +25,6 @@ import logging
 import tempfile
 from pathlib import Path
 from typing import Optional
-from functools import partial
 from dataclasses import dataclass, field
 
 from mcp.server.fastmcp import FastMCP
@@ -163,59 +162,59 @@ class BrowserSession:
             return None
         return Path(root) / profile_name
 
-    def _detect_ua(self) -> str:
+    async def _detect_ua(self) -> str:
         """Detect UA from a temporary page."""
-        from playwright.sync_api import sync_playwright
-        pw = sync_playwright().start()
+        from playwright.async_api import async_playwright
+        pw = await async_playwright().start()
         try:
-            browser = pw.chromium.launch(
+            browser = await pw.chromium.launch(
                 headless=True,
                 executable_path=self.config.chrome_exe,
             )
-            ctx = browser.new_context()
-            page = ctx.new_page()
-            ua = page.evaluate("() => navigator.userAgent")
-            browser.close()
-            pw.stop()
+            ctx = await browser.new_context()
+            page = await ctx.new_page()
+            ua = await page.evaluate("() => navigator.userAgent")
+            await browser.close()
+            await pw.stop()
             return str(ua)
         except Exception as e:
             log.warning(f"UA detection failed: {e}")
             return ""
 
-    def _get_ua(self) -> str:
+    async def _get_ua(self) -> str:
         if self._ua:
             return self._ua
         ua = self._read_ua_cache()
         if ua:
             self._ua = ua
             return ua
-        ua = self._detect_ua()
+        ua = await self._detect_ua()
         if ua:
             self._write_ua_cache(ua)
         self._ua = ua
         return ua
 
     # ---- Browser lifecycle ----
-    def _ensure_browser_running(self) -> bool:
+    async def _ensure_browser_running(self) -> bool:
         """Check if browser/page are still connected."""
         if self._browser and self._page:
             try:
-                self._page.evaluate("1+1")
+                await self._page.evaluate("1+1")
                 return True
             except Exception:
                 log.info("Browser disconnected, reconnecting...")
-                self.close()
+                await self.close()
         elif self._context and self._page:
             # persistent context mode (_browser is None)
             try:
-                self._page.evaluate("1+1")
+                await self._page.evaluate("1+1")
                 return True
             except Exception:
                 log.info("Browser disconnected (persistent context), reconnecting...")
-                self.close()
+                await self.close()
         return False
 
-    def _launch_with_profile(self):
+    async def _launch_with_profile(self):
         """Launch using Chrome profile (persistent context)."""
         profile_path = self._resolve_profile_path(self.config.chrome_profile)
         if not profile_path:
@@ -225,8 +224,8 @@ class BrowserSession:
             )
         log.info(f"Launching with Chrome profile: {self.config.chrome_profile} -> {profile_path}")
 
-        from playwright.sync_api import sync_playwright
-        self._playwright = sync_playwright().start()
+        from playwright.async_api import async_playwright
+        self._playwright = await async_playwright().start()
 
         launch_args = {
             "headless": self.config.headless,
@@ -243,14 +242,16 @@ class BrowserSession:
         if self.config.chrome_exe:
             launch_args["executable_path"] = self.config.chrome_exe
 
+        ua = await self._get_ua()
+
         # launch_persistent_context returns a BrowserContext directly
-        self._context = self._playwright.chromium.launch_persistent_context(
+        self._context = await self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(profile_path),
             **launch_args,
             viewport={"width": self.config.window_width, "height": self.config.window_height},
             locale=self.config.locale,
             timezone_id=self.config.timezone,
-            user_agent=self._get_ua() or None,
+            user_agent=ua or None,
             permissions=["geolocation", "notifications"],
             color_scheme="light",
             extra_http_headers={
@@ -260,31 +261,31 @@ class BrowserSession:
         )
 
         # Inject anti-detection
-        self._context.add_init_script(ANTI_DETECTION_JS)
+        await self._context.add_init_script(ANTI_DETECTION_JS)
 
-        self._page = self._context.new_page()
+        self._page = await self._context.new_page()
         # _browser stays None for persistent context mode
 
         # Human-like initial mouse movement
         try:
-            self._page.mouse.move(
+            await self._page.mouse.move(
                 random.randint(int(self.config.window_width * 0.4),
                                 int(self.config.window_width * 0.6)),
                 random.randint(int(self.config.window_height * 0.4),
                                 int(self.config.window_height * 0.6)),
                 steps=random.randint(8, 18),
             )
-            self._page.wait_for_timeout(random.randint(300, 900))
+            await self._page.wait_for_timeout(random.randint(300, 900))
         except Exception:
             pass
 
         log.info(f"Browser ready (profile: {self.config.chrome_profile})")
 
-    def _launch_fresh(self):
+    async def _launch_fresh(self):
         """Launch a fresh browser (no profile)."""
-        from playwright.sync_api import sync_playwright
+        from playwright.async_api import async_playwright
 
-        self._playwright = sync_playwright().start()
+        self._playwright = await async_playwright().start()
 
         launch_args = {
             "headless": self.config.headless,
@@ -303,10 +304,10 @@ class BrowserSession:
             launch_args["executable_path"] = self.config.chrome_exe
 
         log.info(f"Launching Chromium (headless={self.config.headless})")
-        self._browser = self._playwright.chromium.launch(**launch_args)
+        self._browser = await self._playwright.chromium.launch(**launch_args)
 
         # UA from cache
-        ua = self._get_ua()
+        ua = await self._get_ua()
         ua_arg = ua if ua else None
 
         # Load saved storage state if exists
@@ -317,7 +318,7 @@ class BrowserSession:
             except Exception:
                 pass
 
-        self._context = self._browser.new_context(
+        self._context = await self._browser.new_context(
             viewport={"width": self.config.window_width, "height": self.config.window_height},
             locale=self.config.locale,
             timezone_id=self.config.timezone,
@@ -333,69 +334,69 @@ class BrowserSession:
         )
 
         # Inject anti-detection
-        self._context.add_init_script(ANTI_DETECTION_JS)
+        await self._context.add_init_script(ANTI_DETECTION_JS)
 
-        self._page = self._context.new_page()
+        self._page = await self._context.new_page()
 
         # Human-like initial mouse movement
         try:
-            self._page.mouse.move(
+            await self._page.mouse.move(
                 random.randint(int(self.config.window_width * 0.4),
                                 int(self.config.window_width * 0.6)),
                 random.randint(int(self.config.window_height * 0.4),
                                 int(self.config.window_height * 0.6)),
                 steps=random.randint(8, 18),
             )
-            self._page.wait_for_timeout(random.randint(300, 900))
+            await self._page.wait_for_timeout(random.randint(300, 900))
         except Exception:
             pass
 
         log.info("Browser ready")
 
-    def ensure_browser(self):
+    async def ensure_browser(self):
         """Lazy-init the browser if not already running."""
-        if self._ensure_browser_running():
+        if await self._ensure_browser_running():
             return
 
         if self.config.chrome_profile:
-            self._launch_with_profile()
+            await self._launch_with_profile()
         else:
-            self._launch_fresh()
+            await self._launch_fresh()
 
-    def get_page(self):
+    async def get_page(self):
         """Ensure browser is running and return the current page."""
-        self.ensure_browser()
+        await self.ensure_browser()
         return self._page
 
-    def save_state(self):
+    async def save_state(self):
         """Save cookies + localStorage for login persistence."""
         try:
             if self._context:
-                self._context.storage_state(path=str(self._state_path))
+                await self._context.storage_state(path=str(self._state_path))
                 log.info(f"Storage state saved -> {self._state_path}")
         except Exception as e:
             log.warning(f"Failed saving storage state: {e}")
 
-    def close(self):
+    async def close(self):
         """Close all browser resources."""
         try:
             if self._page:
-                self._page.close()
+                await self._page.close()
         except Exception:
             pass
         try:
             if self._context:
-                self._context.close()
+                await self._context.close()
         except Exception:
             pass
         try:
             if self._browser:
-                self._browser.close()
+                await self._browser.close()
         except Exception:
             pass
         try:
             if self._playwright:
-                self._playwright.stop()
+                await self._playwright.stop()
         except Exception:
             pass
         self._page = None
@@ -423,203 +424,194 @@ _session = BrowserSession(_config)
 mcp = FastMCP("playwright-browser", log_level="WARNING")
 
 
-def _run_sync(fn, *args, **kwargs):
-    """Run a synchronous function in a thread to avoid asyncio conflicts."""
-    loop = asyncio.get_event_loop()
-    return loop.run_in_executor(None, partial(fn, *args, **kwargs))
+# Helper: run an async callable from an MCP tool that returns JSON string
+async def _call(fn):
+    """Wrap an async callable, handle exceptions to JSON."""
+    try:
+        result = await fn()
+        if isinstance(result, str):
+            return result
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
 
 
 @mcp.tool()
 async def pw_navigate(url: str, wait_until: str = "load") -> str:
     """Navigate the browser to a URL. Returns page title and URL."""
-    def _sync():
-        page = _session.get_page()
-        page.goto(url, wait_until=wait_until, timeout=30000)
-        return json.dumps({
+    async def _do():
+        page = await _session.get_page()
+        await page.goto(url, wait_until=wait_until, timeout=30000)
+        return {
             "success": True,
-            "title": page.title(),
+            "title": await page.title(),
             "url": page.url,
-        }, ensure_ascii=False)
-    return await _run_sync(_sync)
+        }
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_click(selector: str, timeout: int = 10000) -> str:
     """Click an element identified by CSS selector. Returns success status."""
-    def _sync():
-        page = _session.get_page()
-        try:
-            element = page.wait_for_selector(selector, timeout=timeout)
-            if not element:
-                return json.dumps({"success": False, "error": f"Element not found: {selector}"})
-            box = element.bounding_box()
-            if box:
-                tx = box["x"] + box["width"] * random.uniform(0.2, 0.8)
-                ty = box["y"] + box["height"] * random.uniform(0.2, 0.8)
-                page.mouse.move(tx, ty, steps=random.randint(5, 12))
-                page.wait_for_timeout(random.randint(50, 200))
-            element.click()
-            return json.dumps({"success": True, "selector": selector})
-        except Exception as e:
-            return json.dumps({"success": False, "error": str(e)})
-    return await _run_sync(_sync)
+    async def _do():
+        page = await _session.get_page()
+        element = await page.wait_for_selector(selector, timeout=timeout)
+        if not element:
+            return {"success": False, "error": f"Element not found: {selector}"}
+        box = await element.bounding_box()
+        if box:
+            tx = box["x"] + box["width"] * random.uniform(0.2, 0.8)
+            ty = box["y"] + box["height"] * random.uniform(0.2, 0.8)
+            await page.mouse.move(tx, ty, steps=random.randint(5, 12))
+            await page.wait_for_timeout(random.randint(50, 200))
+        await element.click()
+        return {"success": True, "selector": selector}
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_type(selector: str, text: str, timeout: int = 10000, clear_first: bool = True) -> str:
     """Type text into an input field. Optionally clear first."""
-    def _sync():
-        page = _session.get_page()
-        try:
-            element = page.wait_for_selector(selector, timeout=timeout)
-            if not element:
-                return json.dumps({"success": False, "error": f"Element not found: {selector}"})
-            element.click()
-            if clear_first:
-                element.fill("")
-                page.wait_for_timeout(100)
-            page.keyboard.type(text, delay=random.randint(20, 80))
-            return json.dumps({"success": True, "selector": selector, "chars": len(text)})
-        except Exception as e:
-            return json.dumps({"success": False, "error": str(e)})
-    return await _run_sync(_sync)
+    async def _do():
+        page = await _session.get_page()
+        element = await page.wait_for_selector(selector, timeout=timeout)
+        if not element:
+            return {"success": False, "error": f"Element not found: {selector}"}
+        await element.click()
+        if clear_first:
+            await element.fill("")
+            await page.wait_for_timeout(100)
+        await page.keyboard.type(text, delay=random.randint(20, 80))
+        return {"success": True, "selector": selector, "chars": len(text)}
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_screenshot(full_page: bool = False) -> str:
     """Take a screenshot of the current page. Returns the file path."""
-    def _sync():
-        page = _session.get_page()
+    async def _do():
+        page = await _session.get_page()
         timestamp = int(time.time())
         shot_dir = Path(_config.data_dir) / "screenshots"
         shot_dir.mkdir(parents=True, exist_ok=True)
         path = str(shot_dir / f"screenshot_{timestamp}.png")
-        page.screenshot(path=path, full_page=full_page)
-        return json.dumps({"success": True, "path": path}, ensure_ascii=False)
-    return await _run_sync(_sync)
+        await page.screenshot(path=path, full_page=full_page)
+        return {"success": True, "path": path}
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_get_html(selector: Optional[str] = None) -> str:
     """Get the HTML content of the page (or a specific element). Returns HTML string."""
-    def _sync():
-        page = _session.get_page()
+    async def _do():
+        page = await _session.get_page()
         if selector:
-            element = page.query_selector(selector)
+            element = await page.query_selector(selector)
             if not element:
-                return json.dumps({"success": False, "error": f"Element not found: {selector}"})
-            html = element.inner_html()
+                return {"success": False, "error": f"Element not found: {selector}"}
+            html = await element.inner_html()
         else:
-            html = page.content()
-        return json.dumps({"success": True, "html": html[:50000]}, ensure_ascii=False)
-    return await _run_sync(_sync)
+            html = await page.content()
+        return {"success": True, "html": html[:50000]}
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_get_text(selector: Optional[str] = None) -> str:
     """Get visible text content of the page (or a specific element)."""
-    def _sync():
-        page = _session.get_page()
+    async def _do():
+        page = await _session.get_page()
         if selector:
-            element = page.query_selector(selector)
+            element = await page.query_selector(selector)
             if not element:
-                return json.dumps({"success": False, "error": f"Element not found: {selector}"})
-            text = element.inner_text()
+                return {"success": False, "error": f"Element not found: {selector}"}
+            text = await element.inner_text()
         else:
-            text = page.inner_text("body")
-        return json.dumps({"success": True, "text": text[:50000]}, ensure_ascii=False)
-    return await _run_sync(_sync)
+            text = await page.inner_text("body")
+        return {"success": True, "text": text[:50000]}
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_evaluate(js_code: str) -> str:
     """Execute JavaScript in the page context. Returns the result."""
-    def _sync():
-        page = _session.get_page()
-        try:
-            result = page.evaluate(js_code)
-            return json.dumps({"success": True, "result": result}, ensure_ascii=False)
-        except Exception as e:
-            return json.dumps({"success": False, "error": str(e)})
-    return await _run_sync(_sync)
+    async def _do():
+        page = await _session.get_page()
+        result = await page.evaluate(js_code)
+        return {"success": True, "result": result}
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_wait(selector: str = "", timeout: int = 10000) -> str:
     """Wait for an element to appear, or wait for network idle if no selector.
     If selector is empty, waits for network idle."""
-    def _sync():
-        page = _session.get_page()
-        try:
-            if selector:
-                page.wait_for_selector(selector, timeout=timeout)
-            else:
-                page.wait_for_load_state("networkidle", timeout=timeout)
-            return json.dumps({"success": True})
-        except Exception as e:
-            return json.dumps({"success": False, "error": str(e)})
-    return await _run_sync(_sync)
+    async def _do():
+        page = await _session.get_page()
+        if selector:
+            await page.wait_for_selector(selector, timeout=timeout)
+        else:
+            await page.wait_for_load_state("networkidle", timeout=timeout)
+        return {"success": True}
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_scroll(direction: str = "down", amount: int = 500) -> str:
     """Scroll the page. direction: 'down', 'up', 'bottom', 'top'."""
-    def _sync():
-        page = _session.get_page()
-        try:
-            if direction == "bottom":
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            elif direction == "top":
-                page.evaluate("window.scrollTo(0, 0)")
-            elif direction == "down":
-                page.evaluate(f"window.scrollBy(0, {amount})")
-            elif direction == "up":
-                page.evaluate(f"window.scrollBy(0, -{amount})")
-            page.wait_for_timeout(random.randint(200, 500))
-            return json.dumps({"success": True})
-        except Exception as e:
-            return json.dumps({"success": False, "error": str(e)})
-    return await _run_sync(_sync)
+    async def _do():
+        page = await _session.get_page()
+        if direction == "bottom":
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        elif direction == "top":
+            await page.evaluate("window.scrollTo(0, 0)")
+        elif direction == "down":
+            await page.evaluate(f"window.scrollBy(0, {amount})")
+        elif direction == "up":
+            await page.evaluate(f"window.scrollBy(0, -{amount})")
+        await page.wait_for_timeout(random.randint(200, 500))
+        return {"success": True}
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_save_state() -> str:
     """Save browser session state (cookies + localStorage) for login persistence."""
-    def _sync():
-        _session.save_state()
-        return json.dumps({"success": True, "path": str(_session._state_path)})
-    return await _run_sync(_sync)
+    async def _do():
+        await _session.save_state()
+        return {"success": True, "path": str(_session._state_path)}
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_close() -> str:
     """Close the browser session. Use this when done to free resources."""
-    def _sync():
-        _session.close()
-        return json.dumps({"success": True})
-    return await _run_sync(_sync)
+    async def _do():
+        await _session.close()
+        return {"success": True}
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_status() -> str:
     """Get browser status: running, URL, title, viewport size."""
-    def _sync():
+    async def _do():
         try:
             if _session._page:
                 page = _session._page
                 url = page.url
-                title = page.title()
+                title = await page.title()
                 viewport = page.viewport_size
-                return json.dumps({
+                return {
                     "running": True,
                     "url": url,
                     "title": title,
                     "viewport": viewport,
-                }, ensure_ascii=False)
-            return json.dumps({"running": False})
+                }
+            return {"running": False}
         except Exception:
-            return json.dumps({"running": False})
-    return await _run_sync(_sync)
+            return {"running": False}
+    return await _call(_do)
 
 
 # ---------------------------------------------------------------------------
@@ -634,7 +626,7 @@ async def pw_list_profiles() -> str:
     def _sync():
         root = _config.chrome_user_data_root or BrowserSession._default_chrome_user_data_root()
         if not root:
-            return json.dumps({"success": False, "error": "Chrome User Data root not found. Set PW_CHROME_USER_DATA_ROOT env var."})
+            return {"success": False, "error": "Chrome User Data root not found. Set PW_CHROME_USER_DATA_ROOT env var."}
         root_path = Path(root)
         profiles = []
         # Always include Default if it exists
@@ -645,13 +637,15 @@ async def pw_list_profiles() -> str:
         for item in sorted(root_path.iterdir()):
             if item.name.startswith("Profile") and item.is_dir():
                 profiles.append({"name": item.name, "path": str(item)})
-        return json.dumps({
+        return {
             "success": True,
             "user_data_root": str(root_path),
             "profiles": profiles,
             "current": _config.chrome_profile,
-        }, ensure_ascii=False)
-    return await _run_sync(_sync)
+        }
+    # This is pure filesystem I/O, no Playwright — safe to run sync in executor
+    loop = asyncio.get_event_loop()
+    return json.dumps(await loop.run_in_executor(None, _sync), ensure_ascii=False)
 
 
 @mcp.tool()
@@ -660,7 +654,7 @@ async def pw_use_profile(profile_name: str) -> str:
     Closes current browser and re-opens with the selected profile.
     Pass empty string ('') to go back to fresh (no profile) mode.
     Examples: 'Default', 'Profile 1', 'Profile 2'"""
-    def _sync():
+    async def _do():
         old_profile = _config.chrome_profile
         if profile_name == "" or profile_name is None:
             _config.chrome_profile = None
@@ -668,38 +662,33 @@ async def pw_use_profile(profile_name: str) -> str:
             # Verify profile exists
             profile_path = _session._resolve_profile_path(profile_name)
             if not profile_path or not profile_path.is_dir():
-                return json.dumps({
+                return {
                     "success": False,
                     "error": f"Profile '{profile_name}' not found. Use pw_list_profiles() to see available profiles.",
-                })
+                }
             _config.chrome_profile = profile_name
 
         # Close and reopen with new profile
-        _session.close()
-        try:
-            _session.ensure_browser()
-            return json.dumps({
-                "success": True,
-                "old_profile": old_profile,
-                "new_profile": _config.chrome_profile,
-                "message": f"Switched from '{old_profile or 'fresh'}' to '{_config.chrome_profile or 'fresh'}'",
-            }, ensure_ascii=False)
-        except Exception as e:
-            return json.dumps({"success": False, "error": str(e)})
-    return await _run_sync(_sync)
+        await _session.close()
+        await _session.ensure_browser()
+        return {
+            "success": True,
+            "old_profile": old_profile,
+            "new_profile": _config.chrome_profile,
+            "message": f"Switched from '{old_profile or 'fresh'}' to '{_config.chrome_profile or 'fresh'}'",
+        }
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_current_profile() -> str:
     """Show which Chrome profile is currently active.
     Returns null/None if using fresh (no profile) mode."""
-    def _sync():
-        return json.dumps({
-            "success": True,
-            "profile": _config.chrome_profile,
-            "headless": _config.headless,
-        }, ensure_ascii=False)
-    return await _run_sync(_sync)
+    return json.dumps({
+        "success": True,
+        "profile": _config.chrome_profile,
+        "headless": _config.headless,
+    }, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -820,16 +809,16 @@ class Recorder:
         self._page = None
         self._recording = False
 
-    def start(self, url: str = "", chrome_exe: Optional[str] = None,
-              chrome_profile: Optional[str] = None, user_data_root: str = "") -> dict:
+    async def start(self, url: str = "", chrome_exe: Optional[str] = None,
+                    chrome_profile: Optional[str] = None, user_data_root: str = "") -> dict:
         """Open a visible browser and start recording user actions.
         If chrome_profile is set, uses that Chrome profile (persistent context)."""
         if self._recording:
             return {"success": False, "error": "Already recording. Stop first with pw_record_stop()"}
 
-        from playwright.sync_api import sync_playwright
+        from playwright.async_api import async_playwright
 
-        self._playwright = sync_playwright().start()
+        self._playwright = await async_playwright().start()
 
         # Determine profile mode
         profile_name = chrome_profile or _config.chrome_profile
@@ -856,7 +845,7 @@ class Recorder:
 
         if profile_path:
             log.info(f"Opening recorder browser with profile: {profile_name} -> {profile_path}")
-            self._context = self._playwright.chromium.launch_persistent_context(
+            self._context = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile_path),
                 **launch_args,
                 viewport={"width": 1280, "height": 900},
@@ -868,11 +857,11 @@ class Recorder:
                     "Accept-Language": "zh-CN,zh;q=0.9",
                 },
             )
-            self._page = self._context.new_page()
+            self._page = await self._context.new_page()
         else:
             log.info("Opening recorder browser (headed, visible)...")
-            self._browser = self._playwright.chromium.launch(**launch_args)
-            self._context = self._browser.new_context(
+            self._browser = await self._playwright.chromium.launch(**launch_args)
+            self._context = await self._browser.new_context(
                 viewport={"width": 1280, "height": 900},
                 locale=_config.locale,
                 timezone_id=_config.timezone,
@@ -882,16 +871,16 @@ class Recorder:
                     "Accept-Language": "zh-CN,zh;q=0.9",
                 },
             )
-            self._page = self._context.new_page()
+            self._page = await self._context.new_page()
 
         # Inject anti-detection
-        self._context.add_init_script(ANTI_DETECTION_JS)
+        await self._context.add_init_script(ANTI_DETECTION_JS)
 
         # Inject recorder JS after page load
-        self._page.add_init_script(RECORDER_INJECT_JS)
+        await self._page.add_init_script(RECORDER_INJECT_JS)
 
         if url:
-            self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
         self._recording = True
         result = {
@@ -903,14 +892,14 @@ class Recorder:
         log.info(f"Recorder started. URL={url or '(blank)'}, profile={profile_name or 'fresh'}")
         return result
 
-    def stop(self) -> dict:
+    async def stop(self) -> dict:
         """Stop recording and return the captured actions."""
         if not self._recording or not self._page:
             return {"success": False, "error": "Not recording"}
 
         # Extract recorded events
         try:
-            events = self._page.evaluate("() => window.__pw_recorder_events || []")
+            events = await self._page.evaluate("() => window.__pw_recorder_events || []")
         except Exception as e:
             events = []
             log.warning(f"Could not extract events: {e}")
@@ -918,27 +907,27 @@ class Recorder:
         # Get final URL
         try:
             final_url = self._page.url
-            final_title = self._page.title()
+            final_title = await self._page.title()
         except Exception:
             final_url = ""
             final_title = ""
 
         # Close the recording browser
         try:
-            self._page.close()
+            await self._page.close()
         except Exception:
             pass
         try:
-            self._context.close()
+            await self._context.close()
         except Exception:
             pass
         try:
             if self._browser:
-                self._browser.close()
+                await self._browser.close()
         except Exception:
             pass
         try:
-            self._playwright.stop()
+            await self._playwright.stop()
         except Exception:
             pass
 
@@ -1084,21 +1073,21 @@ async def pw_record_start(url: str = "") -> str:
     You interact with it, and all clicks/typing/navigation are captured.
     Pass a URL to open initially, or leave blank for a blank page.
     Uses the currently active chrome_profile if set."""
-    def _sync():
-        result = _recorder.start(url=url, chrome_exe=_config.chrome_exe,
-                                  chrome_profile=_config.chrome_profile)
-        return json.dumps(result, ensure_ascii=False)
-    return await _run_sync(_sync)
+    async def _do():
+        result = await _recorder.start(url=url, chrome_exe=_config.chrome_exe,
+                                       chrome_profile=_config.chrome_profile)
+        return result
+    return await _call(_do)
 
 
 @mcp.tool()
 async def pw_record_stop() -> str:
     """Stop recording and return the captured actions as a playable script.
     Call this after you finish interacting with the recording browser."""
-    def _sync():
-        result = _recorder.stop()
-        return json.dumps(result, ensure_ascii=False, indent=2)
-    return await _run_sync(_sync)
+    async def _do():
+        result = await _recorder.stop()
+        return result
+    return await _call(_do)
 
 
 # ---------------------------------------------------------------------------
