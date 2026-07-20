@@ -127,7 +127,7 @@ async def test_browser_navigate():
 
     ctx = _make_ctx()
     result = await browser_navigate("https://example.com", ctx)
-    assert "https://example.com" in result
+    assert result.startswith("Navigated to")
     assert "200" in result
     ctx.request_context.lifespan_context.page.goto.assert_awaited_once()
 
